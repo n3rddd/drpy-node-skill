@@ -24,6 +24,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { execFileSync } from 'child_process';
 
 export const LOCAL_TARGET = 'local';
 
@@ -33,6 +34,22 @@ function configDir() {
 
 function configPath() {
   return path.join(configDir(), 'gateways.json');
+}
+
+// persist 后同一 shell 内的命令拿不到新环境变量（shell 未重读 profile），
+// Windows 下直接回读注册表 HKCU\Environment 兜底（进程内缓存）。
+const _regEnvCache = new Map();
+function readWindowsUserEnv(name) {
+  if (process.platform !== 'win32') return '';
+  if (_regEnvCache.has(name)) return _regEnvCache.get(name);
+  let v = '';
+  try {
+    const out = execFileSync('reg', ['query', 'HKCU\\Environment', '/v', name], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const m = /REG_SZ\s+([\s\S]*)$/.exec(out);
+    if (m) v = m[1].trim();
+  } catch { /* 变量不存在 */ }
+  _regEnvCache.set(name, v);
+  return v;
 }
 
 export function loadConfig() {
@@ -54,11 +71,12 @@ export function saveConfig(cfg) {
   fs.writeFileSync(configPath(), JSON.stringify(cfg, null, 2) + '\n', 'utf-8');
 }
 
-/** env 引用优先，明文兜底；都不存在返回 '' */
+/** env 引用优先；其次 Windows 注册表兜底（persist 后同会话场景）；明文兜底；都不存在返回 '' */
 function resolveSecret(envKey, inline) {
   if (envKey) {
-    const v = process.env[envKey];
-    if (v) return v;
+    if (process.env[envKey]) return process.env[envKey];
+    const fromReg = readWindowsUserEnv(envKey);
+    if (fromReg) return fromReg;
   }
   return inline || '';
 }

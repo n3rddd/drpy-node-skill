@@ -151,7 +151,9 @@ async function gwPersist(ctx) {
     env_vars: envVars,
     persisted_to: isWin ? 'Windows 用户级环境变量(HKCU\\Environment) + bash profile' : 'bash profile（Linux/macOS 无系统级环境变量，走 ~/.bashrc）',
     bash_profiles: [...new Set(bashFiles)],
-    note: '新开终端/会话生效；已开着的终端需重开或 source ~/.bashrc。SSH 登录若未生效，确认 ~/.profile 会 source ~/.bashrc。',
+    note: isWin
+      ? '凭据已同时写入注册表+profile，本会话及新终端的后续命令立即可用；其他已开着的终端需重开。'
+      : '新开终端/会话生效；本会话内后续命令若 401，先 source ~/.bashrc（shell 未重读 profile）。SSH 登录若未生效，确认 ~/.profile 会 source ~/.bashrc。',
   };
 }
 

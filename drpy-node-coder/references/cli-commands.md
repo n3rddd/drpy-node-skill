@@ -8,7 +8,7 @@
 | 命令 | 说明 |
 |---|---|
 | `gateway add <name> <url>` | `--user --password-env --password --api-pwd-env --api-pwd --note`，`--overwrite` 覆盖 |
-| `gateway persist <name>` | 凭据固化：Windows 用户级环境变量(HKCU\Environment) + ~/.bashrc/.bash_profile 幂等 upsert；配置改存变量名清明文；新会话零配置 |
+| `gateway persist <name>` | 凭据固化：Windows 用户级环境变量(HKCU\Environment) + ~/.bashrc/.bash_profile/.zshrc 幂等 upsert；Linux/macOS 仅 bash profile（不创建 .bash_profile 防遮蔽 ~/.profile）；凭据解析带注册表兜底（persist 后同会话命令立即可用） |
 | `gateway list` / `gateway current` | 列网关（凭据脱敏）/ 当前网关 |
 | `gateway use <name>` | 切换默认网关（nvm use 式持久化；`local` 亦可） |
 | `gateway remove <name>` | 删除网关 |
