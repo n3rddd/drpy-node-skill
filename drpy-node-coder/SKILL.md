@@ -41,7 +41,7 @@ node cli.js gateway use local       # 切回本地
 3. **带凭据重配+固化**：`gateway add <名> <url> --overwrite --user .. --password .. --api-pwd ..` → `gateway persist <名>`（一次性固化：凭据写入 Windows 用户级环境变量 + Git Bash profile，配置文件改存变量名、清掉明文；幂等可重跑）→ `gateway test` 全绿。此后**任何新终端/新会话零配置可用**，无需再 export。明文→固化的两步由 AI 连续完成，用户只需提供一次凭据。
 4. **切换+验证**：`gateway use <名>` → 真实跑一条（如 `src list`）→ 向用户报告连接摘要（远端版本、源数量、网关名、当前指向）。
 
-- **凭据**：`user`/`password`=远端 `.env` 的 `API_AUTH_NAME`/`API_AUTH_CODE`；`api_pwd`=远端 `API_PWD`。配置（`~/.drpy-node-coder/gateways.json`，不入 git）只存变量名；`gateway persist <名>` 一次性把凭据固化到 Windows 用户级环境变量 + bash profile——**配置完必跑 persist**，此后任何新终端/新会话零配置可用。
+- **凭据**：`user`/`password`=远端 `.env` 的 `API_AUTH_NAME`/`API_AUTH_CODE`；`api_pwd`=远端 `API_PWD`。配置（`~/.drpy-node-coder/gateways.json`，不入 git）只存变量名；`gateway persist <名>` 一次性固化凭据——Windows 写用户级环境变量(注册表)+bash profile，Linux/macOS 写 `~/.bashrc`（zsh 用户自动覆盖 `.zshrc`；不创建 `.bash_profile` 以免遮蔽 `~/.profile`）。**配置完必跑 persist**，此后任何新终端/新会话零配置可用。
 - **分发安全**：skill 目录无状态（凭据/配置/根定位全在 `~/.drpy-node-coder/` 与系统环境变量）。给别人发 skill 必须 `node scripts/pack.mjs` 打包（自动排除运行态残留），不要手工 zip。
 - **验证口径（以网关实际服务对象为准）**：远程网关时 `test`/`evaluate`/`syntax`/`validate` 执行于远端（远端运行时真实行为，含它的环境变量/cookie/插件）；本地网关时执行于本地。`fetch`/`analyze`/`guess`/`debug`/`iframe` 是外部站点分析，永远本地执行，与网关无关。`house *` 面向仓库服务器，与网关无关。
 - **远程写源**：`fs write/edit` 源目录自动走远端 `sources/upload`（带服务端语法校验）与 `sources/delete`；其余目录走 files API。写后均回读验证。

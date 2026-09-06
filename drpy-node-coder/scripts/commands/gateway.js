@@ -84,11 +84,15 @@ function bashQuote(v) {
 function upsertBashExport(name, value) {
   const line = `export ${name}=${bashQuote(value)}`;
   const re = new RegExp(`^export ${name}=.*$`, 'm');
-  const files = [path.join(os.homedir(), '.bashrc'), path.join(os.homedir(), '.bash_profile')];
+  // .bashrc 总是写（不存在则创建，bash interactive 通吃）；
+  // .bash_profile / .zshrc 仅在已存在时维护——在 Linux 新机器上创建 .bash_profile 会让
+  // login shell 不再读 ~/.profile（丢失发行版默认 PATH 初始化）；.zshrc 存在说明是 zsh 用户
+  const always = [path.join(os.homedir(), '.bashrc')];
+  const ifExists = [path.join(os.homedir(), '.bash_profile'), path.join(os.homedir(), '.zshrc')];
+  const targets = [...always, ...ifExists.filter((f) => fs.existsSync(f))];
   const touched = [];
-  for (const f of files) {
-    let content = '';
-    try { content = fs.readFileSync(f, 'utf-8'); } catch { /* 不存在则从空创建 */ }
+  for (const f of targets) {
+    const content = fs.existsSync(f) ? fs.readFileSync(f, 'utf-8') : '';
     const next = re.test(content) ? content.replace(re, line) : content.replace(/\n*$/, '\n') + line + '\n';
     fs.writeFileSync(f, next, 'utf-8');
     touched.push(f);
@@ -123,14 +127,15 @@ async function gwPersist(ctx) {
     throw new Error(`网关 ${name} 没有可固化的凭据。先 gateway add <name> <url> --overwrite --password .. --api-pwd ..（或当前会话 export ${pwdVar}）`);
   }
 
+  const isWin = process.platform === 'win32';
   const envVars = [];
-  if (pwd) {
-    await setWindowsUserEnv(pwdVar, pwd);
-    envVars.push(pwdVar);
-  }
-  if (apiPwd) {
-    await setWindowsUserEnv(apiVar, apiPwd);
-    envVars.push(apiVar);
+  if (isWin) {
+    // Windows：注册表用户级环境变量（cmd/PowerShell/新进程读取）+ bash profile（Git Bash）
+    if (pwd) { await setWindowsUserEnv(pwdVar, pwd); envVars.push(pwdVar); }
+    if (apiPwd) { await setWindowsUserEnv(apiVar, apiPwd); envVars.push(apiVar); }
+  } else {
+    // Linux/macOS：无注册表等价物，凭据经 bash profile 固化
+    envVars.push(pwd ? pwdVar : apiVar);
   }
   const bashFiles = [];
   if (pwd) bashFiles.push(...upsertBashExport(pwdVar, pwd));
@@ -144,9 +149,9 @@ async function gwPersist(ctx) {
   return {
     gateway: name,
     env_vars: envVars,
-    windows_user_env: process.platform === 'win32' ? 'HKCU\\Environment（新开终端生效）' : '(非 Windows 跳过)',
+    persisted_to: isWin ? 'Windows 用户级环境变量(HKCU\\Environment) + bash profile' : 'bash profile（Linux/macOS 无系统级环境变量，走 ~/.bashrc）',
     bash_profiles: [...new Set(bashFiles)],
-    note: '新开终端/会话立即生效；已开着的终端需重开。若当前 ZCode 会话内后续命令仍 401，属父进程环境快照，新会话即恢复。',
+    note: '新开终端/会话生效；已开着的终端需重开或 source ~/.bashrc。SSH 登录若未生效，确认 ~/.profile 会 source ~/.bashrc。',
   };
 }
 

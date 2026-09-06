@@ -34,6 +34,17 @@ const tarExe = process.platform === 'win32'
   ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe')
   : 'tar';
 
+// 非 Windows：GNU tar 不支持 zip 输出。分发打包约定在 Windows 侧执行；Linux/macOS 明确报错而非产出坏包
+if (process.platform !== 'win32') {
+  let isBsd = false;
+  try { isBsd = execFileSync('tar', ['--version'], { encoding: 'utf-8' }).includes('bsdtar'); } catch { /* tar 缺失 */ }
+  if (!isBsd) {
+    console.error('打包约定在 Windows 执行（GNU tar 不支持 zip）。Linux/macOS 需安装 bsdtar(libarchive) 后重试，或改用：');
+    console.error('  zip -r drpy-node-coder.zip drpy-node-coder -x "drpy-node-coder/scripts/.drpy-root" "drpy-node-coder/scripts/logs/*" "drpy-node-coder/scripts/local/*" "drpy-node-coder/scripts/config/*" "drpy-node-coder/scripts/node_modules/*" "*.zip"');
+    process.exit(1);
+  }
+}
+
 const args = ['-a', '-c', '-f', out, ...excludes.flatMap((e) => ['--exclude', e]), '-C', outDir, 'drpy-node-coder'];
 execFileSync(tarExe, args, { stdio: 'inherit' });
 
