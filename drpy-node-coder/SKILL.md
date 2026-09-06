@@ -46,6 +46,10 @@ node cli.js gateway use local       # 切回本地
 - **验证口径（以网关实际服务对象为准）**：远程网关时 `test`/`evaluate`/`syntax`/`validate` 执行于远端（远端运行时真实行为，含它的环境变量/cookie/插件）；本地网关时执行于本地。`fetch`/`analyze`/`guess`/`debug`/`iframe` 是外部站点分析，永远本地执行，与网关无关。`house *` 面向仓库服务器，与网关无关。
 - **远程写源**：`fs write/edit` 源目录自动走远端 `sources/upload`（带服务端语法校验）与 `sources/delete`；其余目录走 files API。写后均回读验证。
 - **多网关编排**：用户说"往网关a和网关b同时写xx源/都测一遍"→ AI 循环对每个网关执行同一命令（`--target a`、`--target b`），汇总对比各网关输出（evaluate 结果自带 `target` 字段）。同一源本地写好 → 逐网关 `fs write --content-file <本地文件> --target <gw>` 部署 → 逐网关 `evaluate --target <gw>`。
+- **远程源操作三规则（防 404 迷路，本地同理）**：
+  1. 用户给的源名常是模糊的（"360影视"→真实文件 `360影视[官].js`）。`test`/`evaluate` 直接喂模糊名即可：CLI 自动解析真实源名，唯一命中自动采用并在 `source_resolved` 透明标注；多候选会列出候选让你选，无候选会提示先 `src list --filter`。
+  2. `fs read/write`、`syntax`、`validate`、`resolved` 是文件操作，**必须带目录前缀**（`spider/js/xxx.js`、`spider/php/xxx.php`）；报"文件不存在"先检查前缀。
+  3. 找源名永远用 `src list --filter 关键词`（远端 300+ 源，全量列表浪费上下文）；多引擎源（php/py/cat）远程测试加 `--do php`（`--extend` 同步透传）。
 - **错误自解释**：401=凭据错（核对网关 user/password）；403 只读模式=远端 `.env` 设 `READ_ONLY_MODE=0` 后重启远端；404 无此 API=远端 drpy-node 过旧，提示升级远端。原样把这些提示转告用户，不要盲目重试。
 - **远程限制**：hipy/py 源在远端改动后需远端重启服务（daemon 缓存 py module）；`restart` 命令远程走 admin API，但**不要**在常规部署流程里自动调用。
 

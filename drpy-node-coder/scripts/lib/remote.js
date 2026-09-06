@@ -29,7 +29,7 @@ function buildHeaders(target, json) {
   return h;
 }
 
-function describeHttpError(status, bodyText, apiPath) {
+function describeHttpError(status, bodyText, apiPath, query) {
   let body = {};
   try { body = JSON.parse(bodyText); } catch { /* 非 JSON 响应体 */ }
   const serverMsg = body.error || body.message || bodyText.slice(0, 200);
@@ -50,14 +50,19 @@ function describeHttpError(status, bodyText, apiPath) {
     if (/does not exist/i.test(m) || String(body.error || '') === 'Not Found') {
       return new Error(`远端无此 API(404): ${apiPath}。远端 drpy-node 版本可能过旧缺少该端点，请升级远端代码后重试`);
     }
-    return new Error(String(body.error || body.message || 'Not Found'));
+    const biz = String(body.error || body.message || 'Not Found');
+    // 文件类业务 404 的高频根因：AI 用了不带目录前缀的源文件名
+    if (/文件不存在/.test(biz) && query && query.path && !String(query.path).includes('/')) {
+      return new Error(`${biz}。提示：源文件需带目录前缀（spider/js/xxx.js、spider/php/xxx.php 等）；不确定文件名时先 src list --filter 关键词`);
+    }
+    return new Error(biz);
   }
   return new Error(`远端 HTTP ${status}: ${serverMsg}`);
 }
 
-async function parseJsonResponse(resp, apiPath) {
+async function parseJsonResponse(resp, apiPath, query) {
   const text = await resp.text();
-  if (!resp.ok) throw describeHttpError(resp.status, text, apiPath);
+  if (!resp.ok) throw describeHttpError(resp.status, text, apiPath, query);
   try {
     return JSON.parse(text);
   } catch {
@@ -83,10 +88,10 @@ export async function adminFetch(target, method, apiPath, { query, body, rawText
   });
   if (rawText) {
     const text = await resp.text();
-    if (!resp.ok) throw describeHttpError(resp.status, text, apiPath);
+    if (!resp.ok) throw describeHttpError(resp.status, text, apiPath, query);
     return { status: resp.status, text };
   }
-  return parseJsonResponse(resp, apiPath);
+  return parseJsonResponse(resp, apiPath, query);
 }
 
 /**

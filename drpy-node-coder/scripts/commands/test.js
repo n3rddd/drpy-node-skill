@@ -11,7 +11,41 @@
  * 评分/诊断编排全部在本地 CLI 层，两种后端共用同一套逻辑。
  */
 import * as runtime from '../lib/runtime.js';
-import { runtimeCall } from '../lib/remote.js';
+import fs from '../lib/fsUtil.js';
+import { resolvePath } from '../lib/pathResolver.js';
+import { runtimeCall, adminFetch } from '../lib/remote.js';
+
+/**
+ * 源名宽容解析：用户/AI 常给模糊名（"360影视"）、文件名（"360影视[官].js"）、带前缀路径。
+ * ① 规范化（剥 spider/js 等前缀与 .js 后缀）② 精确匹配 ③ 唯一模糊命中自动采用（结果透明标注）
+ * ④ 多候选/无候选 → 命令级报错并列出候选，绝不把"名字不对"伪装成"测试失败"。
+ */
+async function resolveSourceName(ctx, raw) {
+  const stripped = String(raw).replace(/^spider\/(js|js_dr2|catvod|php|py)\//i, '').replace(/\.js$/i, '');
+  let names = []; // 全部源文件路径（spider/js/xxx.js 形式）
+  if (ctx.target.kind === 'remote') {
+    const body = await adminFetch(ctx.target, 'GET', '/api/admin/sources');
+    for (const [engine, arr] of Object.entries(body)) {
+      if (engine === 'disabled' || !Array.isArray(arr)) continue;
+      names.push(...arr.map((f) => `spider/${engine}/${f}`));
+    }
+  } else {
+    for (const dir of ['spider/js', 'spider/catvod']) {
+      try {
+        names.push(...(await fs.readdir(resolvePath(dir))).filter((f) => f.endsWith('.js')).map((f) => `${dir}/${f}`));
+      } catch { /* 目录不存在 */ }
+    }
+  }
+  const base = (f) => f.replace(/^spider\/[^/]+\//, '').replace(/\.js$/i, '');
+  const exact = names.find((f) => base(f) === stripped);
+  if (exact) return { name: base(exact), autoMatched: false };
+  const hits = names.filter((f) => base(f).includes(stripped));
+  if (hits.length === 1) return { name: base(hits[0]), autoMatched: true, matched_from: String(raw) };
+  if (hits.length > 1) {
+    throw new Error(`源名 "${raw}" 模糊命中 ${hits.length} 个，请指定其一: ${hits.map(base).join(' | ')}`);
+  }
+  throw new Error(`未找到源 "${raw}"。用 src list --filter 关键词 查找真实文件名`);
+}
 
 function truncateData(data, maxLen = 3000) {
   const str = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
@@ -91,6 +125,9 @@ function buildTestResult(interfaceName, success, data, error, duration) {
 
 async function callEngine(ctx, sourceName, query) {
   if (ctx.target.kind === 'remote') {
+    // 多引擎源（php/py/cat）远程测试需透传 do/extend（与 /config 的 sites.ext 对应）
+    if (ctx.flags.do) query.do = ctx.flags.do;
+    if (ctx.flags.extend) query.extend = ctx.flags.extend;
     return runtimeCall(ctx.target, sourceName, query);
   }
   const engine = await runtime.engine();
@@ -196,34 +233,42 @@ async function testPlay(ctx, sourceName, playUrl, flag) {
 
 /** test <source> <home|category|detail|search|play> */
 async function test(ctx) {
-  const sourceName = ctx.positional[0];
+  const rawName = ctx.positional[0];
   const iface = ctx.positional[1];
-  if (!sourceName || !iface) throw new Error('用法: test <source> <home|category|detail|search|play> [...]');
+  if (!rawName || !iface) throw new Error('用法: test <source> <home|category|detail|search|play> [...]');
+  const resolved = await resolveSourceName(ctx, rawName);
+  const sourceName = resolved.name;
 
-  switch (iface) {
-    case 'home':
-      return await testHome(ctx, sourceName);
-    case 'category':
-      return await testCategory(ctx, sourceName, ctx.flags['class-id'] || '1', ctx.flags.ext);
-    case 'detail': {
-      if (!ctx.flags.ids) throw new Error('二级测试需要 --ids（可通过先测一级获取 vod_id）');
-      return await testDetail(ctx, sourceName, ctx.flags.ids);
+  const result = await (async () => {
+    switch (iface) {
+      case 'home':
+        return await testHome(ctx, sourceName);
+      case 'category':
+        return await testCategory(ctx, sourceName, ctx.flags['class-id'] || '1', ctx.flags.ext);
+      case 'detail': {
+        if (!ctx.flags.ids) throw new Error('二级测试需要 --ids（可通过先测一级获取 vod_id）');
+        return await testDetail(ctx, sourceName, ctx.flags.ids);
+      }
+      case 'search':
+        return await testSearch(ctx, sourceName, ctx.flags.keyword || '斗罗大陆');
+      case 'play': {
+        if (!ctx.flags['play-url']) throw new Error('播放测试需要 --play-url');
+        return await testPlay(ctx, sourceName, ctx.flags['play-url'], ctx.flags.flag);
+      }
+      default:
+        throw new Error(`未知接口: ${iface}，支持: home, category, detail, search, play`);
     }
-    case 'search':
-      return await testSearch(ctx, sourceName, ctx.flags.keyword || '斗罗大陆');
-    case 'play': {
-      if (!ctx.flags['play-url']) throw new Error('播放测试需要 --play-url');
-      return await testPlay(ctx, sourceName, ctx.flags['play-url'], ctx.flags.flag);
-    }
-    default:
-      throw new Error(`未知接口: ${iface}，支持: home, category, detail, search, play`);
+  })();
+  if (resolved.autoMatched) {
+    result.source_resolved = `输入 "${resolved.matched_from}" → 实测源 "${sourceName}"`;
   }
+  return result;
 }
 
 /** evaluate <source> [--class-id --keyword --timeout] */
 async function evaluate(ctx) {
-  const sourceName = ctx.positional[0];
-  if (!sourceName) throw new Error('source 必填');
+  const resolved = await resolveSourceName(ctx, ctx.positional[0]);
+  const sourceName = resolved.name;
   const classId = ctx.flags['class-id'] || null;
   const effectiveKeyword = ctx.flags.keyword === undefined ? defaultKeywordFor(sourceName) : ctx.flags.keyword;
 
@@ -235,6 +280,9 @@ async function evaluate(ctx) {
     interfaces: {},
     evaluation: { valid: false, score: 0, details: [] },
   };
+  if (resolved.autoMatched) {
+    results.source_resolved = `输入 "${resolved.matched_from}" → 实测源 "${sourceName}"`;
+  }
 
   let firstCategoryId = classId;
   let firstItemIds = null;

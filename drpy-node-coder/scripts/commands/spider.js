@@ -44,28 +44,32 @@ function extractBody(res) {
 // ============ P3 静态命令 ============
 
 async function listSources(ctx) {
+  const filterKw = ctx.flags.filter;
+  const applyFilter = (arr) => (filterKw ? arr.filter((f) => f.includes(filterKw)) : arr);
   // 远程：/api/admin/sources 按引擎分组返回（js/dr2/catvod/php/py + disabled）
   if (ctx.target.kind === 'remote') {
     const body = await adminFetch(ctx.target, 'GET', '/api/admin/sources');
     const result = {
-      'spider/js': body.js || [],
-      'spider/js_dr2': body.dr2 || [],
-      'spider/catvod': body.catvod || [],
-      'spider/php': body.php || [],
-      'spider/py': body.py || [],
+      'spider/js': applyFilter(body.js || []),
+      'spider/js_dr2': applyFilter(body.dr2 || []),
+      'spider/catvod': applyFilter(body.catvod || []),
+      'spider/php': applyFilter(body.php || []),
+      'spider/py': applyFilter(body.py || []),
     };
     if (Array.isArray(body.disabled) && body.disabled.length > 0) result.disabled = body.disabled;
+    if (filterKw) result.filtered_by = filterKw;
     return result;
   }
   const result = { 'spider/js': [], 'spider/catvod': [] };
   const jsDir = resolvePath('spider/js');
   const catvodDir = resolvePath('spider/catvod');
   if (await fs.pathExists(jsDir)) {
-    result['spider/js'] = (await fs.readdir(jsDir)).filter((f) => f.endsWith('.js'));
+    result['spider/js'] = applyFilter((await fs.readdir(jsDir)).filter((f) => f.endsWith('.js')));
   }
   if (await fs.pathExists(catvodDir)) {
-    result['spider/catvod'] = (await fs.readdir(catvodDir)).filter((f) => f.endsWith('.js'));
+    result['spider/catvod'] = applyFilter((await fs.readdir(catvodDir)).filter((f) => f.endsWith('.js')));
   }
+  if (filterKw) result.filtered_by = filterKw;
   return result;
 }
 
