@@ -15,6 +15,7 @@ import { fileURLToPath } from 'url';
 import { resolvePath } from '../lib/pathResolver.js';
 import * as runtime from '../lib/runtime.js';
 import { flagBool } from '../lib/argv.js';
+import { adminFetch } from '../lib/remote.js';
 import { makeSpiderTemplate, DRPY_LIBS_INFO, DRPY_API_LIST } from '../data/spider-static.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -42,7 +43,20 @@ function extractBody(res) {
 
 // ============ P3 静态命令 ============
 
-async function listSources() {
+async function listSources(ctx) {
+  // 远程：/api/admin/sources 按引擎分组返回（js/dr2/catvod/php/py + disabled）
+  if (ctx.target.kind === 'remote') {
+    const body = await adminFetch(ctx.target, 'GET', '/api/admin/sources');
+    const result = {
+      'spider/js': body.js || [],
+      'spider/js_dr2': body.dr2 || [],
+      'spider/catvod': body.catvod || [],
+      'spider/php': body.php || [],
+      'spider/py': body.py || [],
+    };
+    if (Array.isArray(body.disabled) && body.disabled.length > 0) result.disabled = body.disabled;
+    return result;
+  }
   const result = { 'spider/js': [], 'spider/catvod': [] };
   const jsDir = resolvePath('spider/js');
   const catvodDir = resolvePath('spider/catvod');
@@ -55,7 +69,11 @@ async function listSources() {
   return result;
 }
 
-async function routes() {
+async function routes(ctx) {
+  if (ctx.target.kind === 'remote') {
+    const body = await adminFetch(ctx.target, 'GET', '/api/admin/routes');
+    return { gateway: ctx.target.name, routes: body };
+  }
   const p = resolvePath('controllers/index.js');
   if (!(await fs.pathExists(p))) {
     return { registered_controllers: [], note: 'controllers/index.js not found' };
@@ -68,7 +86,11 @@ async function routes() {
   return { file: 'controllers/index.js', registered_controllers: registered };
 }
 
-async function template() {
+async function template(ctx) {
+  if (ctx.target.kind === 'remote') {
+    const body = await adminFetch(ctx.target, 'GET', '/api/admin/sources/template');
+    return { template: body.template || body };
+  }
   return { template: makeSpiderTemplate() };
 }
 

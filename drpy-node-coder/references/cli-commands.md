@@ -1,15 +1,32 @@
 # CLI 完整命令速查（scripts/cli.js）
 
-统一入口：`node scripts/cli.js [--root <drpy-node路径>] <命令> [位置参数] [--flags]`
+统一入口：`node scripts/cli.js [--root <drpy-node路径>] [--target <网关名>] <命令> [位置参数] [--flags]`
 输出：成功 `{"ok":true,"data":...}` / 失败 `{"ok":false,"error":"...","message":"..."}`（退出码非0）。
 参数：`--flag value` / `--flag=value` / `--header k=v`（可重复）；位置参数在前。大文本用 `--content-file <path>` 或 stdin。
+
+## 网关（多目标：local / 远程 drpy-node）
+| 命令 | 说明 |
+|---|---|
+| `gateway add <name> <url>` | `--user --password-env --password --api-pwd-env --api-pwd --note`，`--overwrite` 覆盖 |
+| `gateway persist <name>` | 凭据固化：Windows 用户级环境变量(HKCU\Environment) + ~/.bashrc/.bash_profile 幂等 upsert；配置改存变量名清明文；新会话零配置 |
+| `gateway list` / `gateway current` | 列网关（凭据脱敏）/ 当前网关 |
+| `gateway use <name>` | 切换默认网关（nvm use 式持久化；`local` 亦可） |
+| `gateway remove <name>` | 删除网关 |
+| `gateway test [name]` | 探活 + /api/admin/version + files/sources/syntax/runtime 端点可用性 |
+
+全局 `--target <网关名>` 对所有业务命令生效；缺省用 `gateway use` 的当前网关（初始 `local`）。
+远程执行口径：test/evaluate/syntax/validate/fs/日志/SQL/配置在远端执行（远端真实行为）；
+fetch/analyze/guess/debug/iframe/filter/house 永远本地/仓库侧，与网关无关。
+凭据对应远端 `.env`：`API_AUTH_NAME`/`API_AUTH_CODE`（admin Basic Auth）、`API_PWD`（运行时接口）。
+配置文件 `~/.drpy-node-coder/gateways.json`（用户目录，不随 git 发布；密码推荐 env 引用）。
+错误提示：401=凭据错；403 只读模式=远端 `.env` READ_ONLY_MODE=0；404 无此 API=升级远端。
 
 ## 元命令
 | 命令 | 说明 |
 |---|---|
 | `setup <drpy-node-绝对路径>` | 写入 `.drpy-root`，定位项目根 |
 | `where` | 显示当前定位的 drpy-node 根 |
-| `doctor` | 自检：node 版本、根定位、7 个运行时模块存在性、house 配置 |
+| `doctor` | 自检：node 版本、根定位、7 个运行时模块存在性、house 配置、网关概览 |
 | `help` | 列出所有可用命令 |
 
 ## 文件系统 fs（移植 fsTools；写操作有安全护栏+写后回读验证）

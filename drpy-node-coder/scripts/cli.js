@@ -2,7 +2,7 @@
 /**
  * drpy-node-coder CLI 统一入口。
  *
- * 用法: node cli.js [--root <drpy-node-路径>] <命令> [位置参数] [--flags]
+ * 用法: node cli.js [--root <drpy-node-路径>] [--target <网关名>] <命令> [位置参数] [--flags]
  *
  * 命令格式两种：
  *   两段式: node cli.js fs read spider/js/xxx.js
@@ -10,6 +10,8 @@
  *
  * 元命令: setup / where / doctor / help
  * 业务命令来自 commands/*.js（动态注册，文件存在则加载）。
+ * --target 选择执行网关：local（默认，本地 drpy-node）或 gateway add 注册的远程网关名；
+ * 不传时用 gateway use 设置的当前网关。文件/验证/测试类命令按 target 分流本地或远程执行。
  *
  * 所有命令统一输出 JSON：成功 {ok:true,data}，失败 {ok:false,error,message}（退出码非 0）。
  */
@@ -20,6 +22,7 @@ import { fileURLToPath } from 'url';
 import { parseArgs } from './lib/argv.js';
 import { ok, fail, attachGlobalErrorHandlers } from './lib/output.js';
 import { getProjectRoot, setProjectRoot, DOTFILE } from './lib/pathResolver.js';
+import { resolveTarget, describeTargets } from './lib/gateway.js';
 
 attachGlobalErrorHandlers();
 
@@ -39,6 +42,7 @@ const COMMAND_FILES = [
   './commands/test.js',
   './commands/house.js',
   './commands/system.js',
+  './commands/gateway.js',
 ];
 const ROUTES = {};
 for (const f of COMMAND_FILES) {
@@ -65,9 +69,13 @@ async function setup(ctx) {
       throw new Error(`路径 ${abs} 不像 drpy-node 项目根（缺少 ${m}）`);
     }
   }
+  fs.mkdirSync(path.dirname(DOTFILE), { recursive: true });
   fs.writeFileSync(DOTFILE, abs + '\n', 'utf-8');
   setProjectRoot(abs);
-  return { root: abs, dotfile: DOTFILE };
+  // 迁移：删除 skill 目录里的旧定位文件（skill 目录保持无状态，zip 可整包分发）
+  const legacy = path.join(__dirname, '.drpy-root');
+  if (fs.existsSync(legacy)) fs.rmSync(legacy);
+  return { root: abs, dotfile: DOTFILE, migrated_from: fs.existsSync(legacy) ? legacy : undefined };
 }
 
 async function where() {
@@ -122,6 +130,12 @@ async function doctor() {
   };
   const vendorCoreOk = result.vendor.localDsCore && result.vendor.sqlite_js && result.vendor.sqlite_wasm;
   result.ok = !!root && Object.values(result.modules).every(Boolean) && vendorCoreOk;
+  // 网关概览（不做网络探测，探活用 gateway test）
+  try {
+    result.gateways = describeTargets();
+  } catch (e) {
+    result.gateways = { error: e.message };
+  }
   return result;
 }
 
@@ -132,7 +146,7 @@ function help() {
     meta,
     business,
     total: meta.length + business.length,
-    tip: '每个命令输出 JSON：成功 {ok:true,data}，失败 {ok:false,error}。详见 README.md',
+    tip: '每个命令输出 JSON：成功 {ok:true,data}，失败 {ok:false,error}。--target <网关> 或 gateway use 切换执行目标。详见 README.md',
   };
 }
 
@@ -146,7 +160,8 @@ const META = {
 // ---- 主流程 ----
 const raw = process.argv.slice(2);
 
-// 提前提取全局 --root / --root=value
+// 提前提取全局 --root / --root=value 与 --target / --target=value（网关选择）
+let targetName;
 for (let i = 0; i < raw.length; i++) {
   const t = raw[i];
   if (t === '--root' && raw[i + 1]) {
@@ -155,6 +170,14 @@ for (let i = 0; i < raw.length; i++) {
     i--;
   } else if (t && t.startsWith('--root=')) {
     setProjectRoot(t.slice('--root='.length));
+    raw.splice(i, 1);
+    i--;
+  } else if (t === '--target' && raw[i + 1]) {
+    targetName = raw[i + 1];
+    raw.splice(i, 2);
+    i--;
+  } else if (t && t.startsWith('--target=')) {
+    targetName = t.slice('--target='.length);
     raw.splice(i, 1);
     i--;
   }
@@ -180,7 +203,7 @@ async function main() {
     ok(help());
     return;
   }
-  const ctx = { positional: pos, flags: parsed.flags, headers: parsed.headers };
+  const ctx = { positional: pos, flags: parsed.flags, headers: parsed.headers, target: resolveTarget(targetName) };
   let handler = null;
 
   const two = pos.length >= 2 ? `${pos[0]} ${pos[1]}` : null;

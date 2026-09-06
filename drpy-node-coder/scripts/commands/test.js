@@ -5,10 +5,13 @@
  * - test <source> <home|category|detail|search|play> [--class-id --ids --keyword --play-url --flag --ext]
  * - evaluate <source> [--class-id --keyword --timeout]
  *
- * 经 runtime.engine() 加载 drpy-node-bundle 的 localDsCore，调用 globalThis.getEngine。
- * rootDir 由 pathResolver 注入（替代原 spiderTestTools 硬编码的 PROJECT_ROOT）。
+ * 双后端（Q3 验证口径：以目标网关的实际行为为准）：
+ *   local  → runtime.engine() 加载 drpy-node-bundle 的 localDsCore，调用 globalThis.getEngine
+ *   remote → 远端运行时 GET /api/:module（服务器真实行为，含其环境变量/插件/daemon）
+ * 评分/诊断编排全部在本地 CLI 层，两种后端共用同一套逻辑。
  */
 import * as runtime from '../lib/runtime.js';
+import { runtimeCall } from '../lib/remote.js';
 
 function truncateData(data, maxLen = 3000) {
   const str = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
@@ -86,15 +89,18 @@ function buildTestResult(interfaceName, success, data, error, duration) {
   return result;
 }
 
-async function callEngine(sourceName, query) {
+async function callEngine(ctx, sourceName, query) {
+  if (ctx.target.kind === 'remote') {
+    return runtimeCall(ctx.target, sourceName, query);
+  }
   const engine = await runtime.engine();
   return engine(sourceName, query);
 }
 
-async function testHome(sourceName) {
+async function testHome(ctx, sourceName) {
   const start = performance.now();
   try {
-    const data = await callEngine(sourceName, {});
+    const data = await callEngine(ctx, sourceName, {});
     const duration = Math.round(performance.now() - start);
     const hasClasses = data && Array.isArray(data.class) && data.class.length > 0;
     const hasList = data && Array.isArray(data.list) && data.list.length > 0;
@@ -105,12 +111,12 @@ async function testHome(sourceName) {
   }
 }
 
-async function testCategory(sourceName, classId, ext) {
+async function testCategory(ctx, sourceName, classId, ext) {
   const start = performance.now();
   try {
     const query = { ac: 'list', t: classId };
     if (ext) query.ext = ext;
-    const data = await callEngine(sourceName, query);
+    const data = await callEngine(ctx, sourceName, query);
     const duration = Math.round(performance.now() - start);
     const hasList = data && Array.isArray(data.list) && data.list.length > 0;
     const success = !!hasList;
@@ -124,11 +130,11 @@ async function testCategory(sourceName, classId, ext) {
   }
 }
 
-async function testDetail(sourceName, ids) {
+async function testDetail(ctx, sourceName, ids) {
   const start = performance.now();
   const idsArray = Array.isArray(ids) ? ids : typeof ids === 'string' && ids.includes(',') ? ids.split(',') : [String(ids)];
   try {
-    const data = await callEngine(sourceName, { ac: 'detail', ids: idsArray });
+    const data = await callEngine(ctx, sourceName, { ac: 'detail', ids: idsArray });
     const duration = Math.round(performance.now() - start);
     const hasList = data && Array.isArray(data.list) && data.list.length > 0;
     const success = !!hasList;
@@ -157,10 +163,10 @@ async function testDetail(sourceName, ids) {
   }
 }
 
-async function testSearch(sourceName, keyword) {
+async function testSearch(ctx, sourceName, keyword) {
   const start = performance.now();
   try {
-    const data = await callEngine(sourceName, { wd: keyword });
+    const data = await callEngine(ctx, sourceName, { wd: keyword });
     const duration = Math.round(performance.now() - start);
     const hasList = data && Array.isArray(data.list) && data.list.length > 0;
     const success = !!hasList;
@@ -170,12 +176,12 @@ async function testSearch(sourceName, keyword) {
   }
 }
 
-async function testPlay(sourceName, playUrl, flag) {
+async function testPlay(ctx, sourceName, playUrl, flag) {
   const start = performance.now();
   try {
     const query = { play: playUrl };
     if (flag) query.flag = flag;
-    const data = await callEngine(sourceName, query);
+    const data = await callEngine(ctx, sourceName, query);
     const duration = Math.round(performance.now() - start);
     const hasUrl = data && data.url && typeof data.url === 'string' && data.url.length > 0;
     const success = !!hasUrl;
@@ -196,18 +202,18 @@ async function test(ctx) {
 
   switch (iface) {
     case 'home':
-      return await testHome(sourceName);
+      return await testHome(ctx, sourceName);
     case 'category':
-      return await testCategory(sourceName, ctx.flags['class-id'] || '1', ctx.flags.ext);
+      return await testCategory(ctx, sourceName, ctx.flags['class-id'] || '1', ctx.flags.ext);
     case 'detail': {
       if (!ctx.flags.ids) throw new Error('二级测试需要 --ids（可通过先测一级获取 vod_id）');
-      return await testDetail(sourceName, ctx.flags.ids);
+      return await testDetail(ctx, sourceName, ctx.flags.ids);
     }
     case 'search':
-      return await testSearch(sourceName, ctx.flags.keyword || '斗罗大陆');
+      return await testSearch(ctx, sourceName, ctx.flags.keyword || '斗罗大陆');
     case 'play': {
       if (!ctx.flags['play-url']) throw new Error('播放测试需要 --play-url');
-      return await testPlay(sourceName, ctx.flags['play-url'], ctx.flags.flag);
+      return await testPlay(ctx, sourceName, ctx.flags['play-url'], ctx.flags.flag);
     }
     default:
       throw new Error(`未知接口: ${iface}，支持: home, category, detail, search, play`);
@@ -224,6 +230,7 @@ async function evaluate(ctx) {
   const overallStart = performance.now();
   const results = {
     source_name: sourceName,
+    target: ctx.target.name,
     total_duration_ms: 0,
     interfaces: {},
     evaluation: { valid: false, score: 0, details: [] },
@@ -237,7 +244,7 @@ async function evaluate(ctx) {
 
   // Step 1: Home
   let homeData = null;
-  try { homeData = await callEngine(sourceName, {}); } catch (_) {}
+  try { homeData = await callEngine(ctx, sourceName, {}); } catch (_) {}
   const homeResult = buildTestResult('首页(home)', !!(homeData && (Array.isArray(homeData.class) || Array.isArray(homeData.list))), homeData, undefined, Math.round(performance.now() - overallStart));
   if (!homeResult.success && homeData) homeResult.error = '返回数据中无有效分类或推荐列表';
   results.interfaces.home = homeResult;
@@ -251,7 +258,7 @@ async function evaluate(ctx) {
   if (firstCategoryId) {
     const catStart = performance.now();
     let catData = null;
-    try { catData = await callEngine(sourceName, { ac: 'list', t: firstCategoryId }); } catch (_) {}
+    try { catData = await callEngine(ctx, sourceName, { ac: 'list', t: firstCategoryId }); } catch (_) {}
     const hasList = catData && Array.isArray(catData.list) && catData.list.length > 0;
     const catResult = { ...buildTestResult('一级(category)', !!hasList, catData, hasList ? undefined : '分类列表为空', Math.round(performance.now() - catStart)), class_id: firstCategoryId, first_item: hasList ? truncateData(catData.list[0], 500) : undefined };
     results.interfaces.category = catResult;
@@ -284,7 +291,7 @@ async function evaluate(ctx) {
     const detailIdsArray = Array.isArray(firstItemIds) ? firstItemIds : [String(firstItemIds)];
     const detailStart = performance.now();
     let detailData = null;
-    try { detailData = await callEngine(sourceName, { ac: 'detail', ids: detailIdsArray }); } catch (_) {}
+    try { detailData = await callEngine(ctx, sourceName, { ac: 'detail', ids: detailIdsArray }); } catch (_) {}
     const hasDetailList = detailData && Array.isArray(detailData.list) && detailData.list.length > 0;
     const detailResult = { ...buildTestResult('二级(detail)', !!hasDetailList, detailData, hasDetailList ? undefined : '详情数据为空', Math.round(performance.now() - detailStart)), test_ids: firstItemIds };
     if (hasDetailList) {
@@ -323,14 +330,14 @@ async function evaluate(ctx) {
 
   // Step 4: Search
   if (effectiveKeyword !== '') {
-    const searchResult = await testSearch(sourceName, effectiveKeyword);
+    const searchResult = await testSearch(ctx, sourceName, effectiveKeyword);
     results.interfaces.search = searchResult;
     results.evaluation.details.push(searchResult.success ? `✅ 搜索: 正常 (关键词: ${effectiveKeyword}, ${searchResult.item_count}条)` : `❌ 搜索: ${searchResult.error || '无数据'} (关键词: ${effectiveKeyword})`);
   }
 
   // Step 5: Play
   if (firstPlayUrl) {
-    const playResult = await testPlay(sourceName, firstPlayUrl, firstPlayFlag);
+    const playResult = await testPlay(ctx, sourceName, firstPlayUrl, firstPlayFlag);
     results.interfaces.play = playResult;
     results.evaluation.details.push(playResult.success ? '✅ 播放: 正常 (返回有效播放地址)' : `❌ 播放: ${playResult.error || '无有效地址'}`);
   } else {

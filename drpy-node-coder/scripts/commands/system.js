@@ -13,6 +13,7 @@ import { promisify } from 'util';
 import { fileURLToPath, pathToFileURL } from 'url';
 
 import { resolvePath } from '../lib/pathResolver.js';
+import { adminFetch } from '../lib/remote.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const execPromise = promisify(exec);
@@ -47,6 +48,10 @@ function setNestedValue(obj, keyPath, value) {
 /** logs [--lines N] */
 async function logs(ctx) {
   const linesToRead = Number(ctx.flags.lines) || 50;
+  if (ctx.target.kind === 'remote') {
+    const body = await adminFetch(ctx.target, 'GET', '/api/admin/logs', { query: { lines: linesToRead } });
+    return { file: body.file || undefined, lines: String(body.content || '').split('\n').slice(-linesToRead).join('\n') };
+  }
   const logDir = resolvePath('logs');
   if (!(await fs.pathExists(logDir))) return { note: 'No logs directory found.' };
   const files = await fs.readdir(logDir);
@@ -62,6 +67,9 @@ async function sql(ctx) {
   const query = ctx.positional.join(' ');
   if (!query || !query.trim().toLowerCase().startsWith('select')) {
     throw new Error('Only SELECT queries are allowed.');
+  }
+  if (ctx.target.kind === 'remote') {
+    return await adminFetch(ctx.target, 'POST', '/api/admin/db/query', { body: { sql: query } });
   }
   const dbPath = resolvePath('database.db');
   const Database = await loadDatabase();
@@ -79,10 +87,20 @@ async function sql(ctx) {
 
 /** config get [key] */
 async function configGet(ctx) {
+  const key = ctx.positional[0];
+  if (ctx.target.kind === 'remote') {
+    if (key) {
+      // 远端带 key 时返回裸值（字符串/数字，非 JSON），用 rawText 容错解析
+      const { text } = await adminFetch(ctx.target, 'GET', '/api/admin/config', { query: { key }, rawText: true });
+      let value = text;
+      try { value = JSON.parse(text); } catch { /* 保留原文 */ }
+      return { key, value };
+    }
+    return await adminFetch(ctx.target, 'GET', '/api/admin/config');
+  }
   const configPath = resolvePath('config/env.json');
   if (!(await fs.pathExists(configPath))) throw new Error('config/env.json not found');
   const config = JSON.parse(await fs.readFile(configPath, 'utf-8'));
-  const key = ctx.positional[0];
   if (key) return { key, value: getNestedValue(config, key) };
   return config;
 }
@@ -92,6 +110,15 @@ async function configSet(ctx) {
   const key = ctx.positional[0];
   const value = ctx.positional[1];
   if (!key || value === undefined) throw new Error('用法: config set <key> <value>');
+  if (ctx.target.kind === 'remote') {
+    let parsedValue = value;
+    try {
+      parsedValue = JSON.parse(value);
+    } catch {
+      /* keep as string */
+    }
+    return await adminFetch(ctx.target, 'POST', '/api/admin/config', { body: { key, value: parsedValue } });
+  }
   const configPath = resolvePath('config/env.json');
   const lockPath = resolvePath('config/env.json.lock');
   if (!(await fs.pathExists(configPath))) throw new Error('config/env.json not found');
@@ -114,8 +141,12 @@ async function configSet(ctx) {
   }
 }
 
-/** restart（PM2 drpys） */
-async function restart() {
+/** restart（PM2 drpys / 远程走 admin restart） */
+async function restart(ctx) {
+  if (ctx.target.kind === 'remote') {
+    const body = await adminFetch(ctx.target, 'POST', '/api/admin/restart');
+    return { success: true, gateway: ctx.target.name, remote_response: body };
+  }
   try {
     await execPromise('pm2 restart drpys');
     return { success: true, message: '服务已通过 PM2 重启' };

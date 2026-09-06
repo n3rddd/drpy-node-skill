@@ -15,6 +15,7 @@ import vm from 'vm';
 import { resolvePath, isSafePath } from '../lib/pathResolver.js';
 import { decodeDsSource } from '../lib/dsHelper.js';
 import * as runtime from '../lib/runtime.js';
+import { adminFetch, fetchRemoteSource, assertRemotePath } from '../lib/remote.js';
 
 const RULE_SUMMARY_KEYS = [
   'title', 'author', '类型', 'host', 'url', 'homeUrl', 'searchUrl',
@@ -240,8 +241,80 @@ async function readCode(filePath) {
   return code;
 }
 
+// ============ 远程实现（服务端执行，以远端为准） ============
+
+/** 远程 syntax：远端服务端检查（支持 js DS 解密 / php -l / py_compile） */
+async function remoteSyntax(ctx) {
+  const filePath = assertRemotePath(ctx.positional[0]);
+  const body = await adminFetch(ctx.target, 'POST', '/api/admin/sources/syntax', { body: { path: filePath } });
+  if (!body.isValid) {
+    throw new Error(`Syntax Error: ${body.error || body.message || '远端语法检查未通过'}`);
+  }
+  return { ok: true, file: filePath, message: body.message };
+}
+
+/** 远程 validate：远端沙箱执行并校验 rule 必填字段 */
+async function remoteValidate(ctx) {
+  const filePath = assertRemotePath(ctx.positional[0]);
+  const body = await adminFetch(ctx.target, 'POST', '/api/admin/sources/validate', { body: { path: filePath } });
+  if (!body.isValid) {
+    return { valid: false, file: filePath, error: body.error || body.message || '远端校验未通过' };
+  }
+  return {
+    valid: true,
+    file: filePath,
+    title: body.title,
+    host: body.host,
+    message: body.message,
+    checked_on: `remote:${ctx.target.name}`,
+  };
+}
+
+/**
+ * 远程 resolved：拉取远端源文件（本地 DS 解密）→ 写系统临时文件 → 本地 getRuleObject 解析。
+ * 模板继承用的是 drpy-node 内置模板字典（template.getMubans()），与源文件位置无关，
+ * 因此本地引擎即可完整解析远端源的最终规则。
+ */
+async function remoteResolved(ctx) {
+  const filePath = assertRemotePath(ctx.positional[0]);
+  const pulled = await fetchRemoteSource(ctx.target, filePath);
+  if (pulled.type !== 'text') throw new Error(`不支持对二进制文件执行 resolved: ${filePath}`);
+
+  const os = await import('os');
+  const tmpFile = path.join(os.tmpdir(), `drpy-coder-resolved-${Date.now()}-${path.basename(filePath)}`);
+  try {
+    await fs.writeFile(tmpFile, pulled.content, 'utf-8');
+    return await resolveWithEngine(tmpFile);
+  } finally {
+    fs.rmSync(tmpFile, { force: true });
+  }
+}
+
+// ============ 本地实现 ============
+
+/** 用本地 drpyS.getRuleObject 输出规则摘要（本地 resolved 与远程 resolved 共用） */
+async function resolveWithEngine(absoluteFilePath) {
+  const mod = await runtime.drpyS();
+  const getRuleObject = mod.getRuleObject || (mod.default && mod.default.getRuleObject);
+  if (typeof getRuleObject !== 'function') {
+    throw new Error('libs/drpyS.js 未导出 getRuleObject');
+  }
+  const rule = await getRuleObject(absoluteFilePath, {}, true);
+  if (!rule || !rule.title) {
+    throw new Error('No valid rule object found (getRuleObject 返回空)');
+  }
+  const summary = {};
+  for (const key of RULE_SUMMARY_KEYS) {
+    if (rule[key] !== undefined) summary[key] = rule[key];
+  }
+  const extraKeys = Object.keys(rule).filter((k) => !RULE_SUMMARY_KEYS.includes(k) && typeof rule[k] !== 'function');
+  if (extraKeys.length > 0) summary._extra_keys = extraKeys;
+  return summary;
+}
+
 /** syntax <path> */
 async function syntax(ctx) {
+  if (ctx.target.kind === 'remote') return remoteSyntax(ctx);
   const filePath = ctx.positional[0];
   if (!filePath || !isSafePath(filePath)) throw new Error('Invalid path');
   const code = await readCode(filePath);
@@ -257,6 +330,7 @@ async function syntax(ctx) {
 
 /** validate <path> */
 async function validate(ctx) {
+  if (ctx.target.kind === 'remote') return remoteValidate(ctx);
   const filePath = ctx.positional[0];
   if (!filePath || !isSafePath(filePath)) throw new Error('Invalid path');
 
@@ -290,25 +364,11 @@ async function validate(ctx) {
 
 /** resolved <path> */
 async function resolved(ctx) {
+  if (ctx.target.kind === 'remote') return remoteResolved(ctx);
   const filePath = ctx.positional[0];
   if (!filePath || !isSafePath(filePath)) throw new Error('Invalid path');
 
-  const mod = await runtime.drpyS();
-  const getRuleObject = mod.getRuleObject || (mod.default && mod.default.getRuleObject);
-  if (typeof getRuleObject !== 'function') {
-    throw new Error('libs/drpyS.js 未导出 getRuleObject');
-  }
-  const rule = await getRuleObject(resolvePath(filePath), {}, true);
-  if (!rule || !rule.title) {
-    throw new Error('No valid rule object found (getRuleObject 返回空)');
-  }
-  const summary = {};
-  for (const key of RULE_SUMMARY_KEYS) {
-    if (rule[key] !== undefined) summary[key] = rule[key];
-  }
-  const extraKeys = Object.keys(rule).filter((k) => !RULE_SUMMARY_KEYS.includes(k) && typeof rule[k] !== 'function');
-  if (extraKeys.length > 0) summary._extra_keys = extraKeys;
-  return summary;
+  return await resolveWithEngine(resolvePath(filePath));
 }
 
 export const commands = {

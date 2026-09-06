@@ -4,18 +4,22 @@
  * 优先级（从高到低）：
  *   1. 命令行 --root <path>
  *   2. 环境变量 DRPY_NODE_ROOT
- *   3. scripts/.drpy-root 文件内容（setup 命令写入）
- *   4. 从 cwd 向上查找含 spider/js + libs_drpy/htmlParser.js 的目录
- *   5. fallback: cwd/../drpy-node（兼容旧 MCP 布局）
- *   6. 全部失败 → null（调用方报错提示 setup）
+ *   3. ~/.drpy-node-coder/drpy-root 文件内容（setup 命令写入；skill 目录保持无状态可整包分发）
+ *   4. 旧版 scripts/.drpy-root（兼容既有安装，setup 后自动迁移删除）
+ *   5. 从 cwd 向上查找含 spider/js + libs_drpy/htmlParser.js 的目录
+ *   6. fallback: cwd/../drpy-node（兼容旧 MCP 布局）
+ *   7. 全部失败 → null（调用方报错提示 setup）
  */
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const SCRIPTS_DIR = path.resolve(__dirname, '..'); // .../drpy-node-coder/scripts
-export const DOTFILE = path.join(SCRIPTS_DIR, '.drpy-root');
+export const USER_CONFIG_DIR = path.join(os.homedir(), '.drpy-node-coder');
+export const DOTFILE = path.join(USER_CONFIG_DIR, 'drpy-root');
+const LEGACY_DOTFILE = path.join(SCRIPTS_DIR, '.drpy-root');
 
 const MARKERS = ['spider/js', 'libs_drpy/htmlParser.js'];
 
@@ -51,6 +55,16 @@ export function resolveProjectRoot(explicit) {
   try {
     if (exists(DOTFILE)) {
       const f = fs.readFileSync(DOTFILE, 'utf-8').trim();
+      if (f && exists(f)) return path.resolve(f);
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // 旧版位置（迁移期兼容；setup 后自动删除）
+  try {
+    if (exists(LEGACY_DOTFILE)) {
+      const f = fs.readFileSync(LEGACY_DOTFILE, 'utf-8').trim();
       if (f && exists(f)) return path.resolve(f);
     }
   } catch {
